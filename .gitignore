@@ -1,0 +1,113 @@
+# =============================================================================
+#  TTQ-Video — .gitignore
+#  原则：仓库只保留「源码 + 配置模板 + 必要的小体积资源」。
+#  以下内容一律不入库：本地密钥、内嵌运行时、模型权重、运行产物、依赖目录。
+# =============================================================================
+
+# ---------------------------------- Python ----------------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+env/
+ENV/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+.tox/
+
+# --------------------- 本地配置与密钥（严禁提交！）--------------------------
+# 模板 config.example.toml 需要保留；真正的 config.toml 含 API Key，永不提交。
+config.toml
+.env
+.env.*
+*.local
+*.secret
+secrets.toml
+
+# ------------------------------- 运行产物 / 日志 -----------------------------
+storage/
+logs/
+*.log
+
+# ------------------- 本地音视频产物（一律不上传）-----------------------------
+# 渲染成片、上传素材、内置 BGM 等音视频文件均不入库。
+# 如确需公开某个演示文件，用 `git add -f <path>` 单独强制加入。
+*.mp4
+*.mov
+*.mkv
+*.webm
+*.avi
+*.flv
+*.m4v
+*.wmv
+*.mpg
+*.mpeg
+*.mp3
+*.wav
+*.m4a
+*.aac
+*.flac
+*.ogg
+*.opus
+*.wma
+*.aiff
+
+# ---------------------- 内嵌运行时 / 大文件（体积大，不入库）-----------------
+# python/ = 内嵌 Python 运行时；ffmpeg/ = 内置 ffmpeg；models/ = 模型权重。
+# 使用者按 README「环境要求」自行准备（Windows 一键包已随发行包提供）。
+/python/
+/ffmpeg/
+/models/
+python/
+
+# ------------- 第三方版权资源 / 大体积素材（不入源码库，随发行包提供）--------
+# resource/fonts 下的 .ttc（微软雅黑 / 华文黑体等）属于专有字体、不可再分发，
+# 且单文件 16~56MB；resource/songs 为内置 BGM 音频（约 56MB）。
+# 若你已获得相应授权并接受仓库体积，注释掉下面两条即可随源码提交。
+resource/fonts/*.ttc
+resource/songs/
+
+# ------------------------- Node / techvideo（Remotion）----------------------
+node_modules/
+.npm/
+npm-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+techvideo/out/
+techvideo/tmp*.json
+techvideo/public/uploads/
+
+# 说明：resource/public/koubo/ 与 resource/public/techvideo/ 是浏览器端构建产物。
+# 为「clone 即可用」，这里选择保留（不入 ignore）；如需保持仓库纯净，取消下面两行注释。
+# resource/public/koubo/
+# resource/public/techvideo/
+
+# ------------------------------ 编辑器 / 操作系统 ----------------------------
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ------------------------------ 内部文档（不公开）------------------------------
+# docs/ 为内部设计 / 规划稿，不随开源仓库发布。
+docs/
+
+# -------------------------------- 工具 / 临时 --------------------------------
+.workbuddy/
+__t.png
+# 中文「副本」类重复文件
+*副本*
+nul

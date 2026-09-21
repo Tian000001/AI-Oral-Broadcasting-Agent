@@ -1,0 +1,42 @@
+{
+  "name": "techvideo",
+  "version": "1.0.0",
+  "description": "科技视频生成器 —— 基于 Remotion 的文案驱动动态视频页面（独立子项目，不依赖 TTQ-Video 原有流水线）",
+  "repository": {},
+  "license": "UNLICENSED",
+  "private": true,
+  "dependencies": {
+    "@remotion/bundler": "4.0.512",
+    "@remotion/cli": "4.0.512",
+    "@remotion/player": "4.0.512",
+    "@remotion/renderer": "4.0.512",
+    "@remotion/zod-types": "4.0.512",
+    "react": "19.2.3",
+    "react-dom": "19.2.3",
+    "remotion": "4.0.512",
+    "zod": "4.4.3",
+    "@remotion/tailwind-v4": "4.0.512",
+    "tailwindcss": "4.0.0"
+  },
+  "devDependencies": {
+    "@remotion/eslint-config-flat": "4.0.512",
+    "@types/react": "19.2.7",
+    "@types/react-dom": "19.2.3",
+    "@types/web": "0.0.166",
+    "esbuild": "0.28.1",
+    "eslint": "9.19.0",
+    "prettier": "3.8.1",
+    "typescript": "5.9.3"
+  },
+  "scripts": {
+    "dev": "remotion studio",
+    "build": "remotion bundle",
+    "web:build": "node build.mjs",
+    "render": "remotion render index.ts PlanVideo out/techvideo.mp4",
+    "upgrade": "remotion upgrade",
+    "lint": "eslint src && tsc"
+  },
+  "sideEffects": [
+    "*.css"
+  ]
+}

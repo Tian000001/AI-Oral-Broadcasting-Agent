@@ -1,0 +1,42 @@
+# Legacy pip install support; the authoritative dependency set lives in
+# pyproject.toml / uv.lock. Versions mirror the bundled runtime (python/).
+# 本清单覆盖运行时代码（app/、main.py、app/cli.py）的全部直接第三方导入，
+# 包括 pyproject.toml 未显式声明、但被代码直接 import 的包。
+
+# --- Web 服务 / API ---
+fastapi==0.136.3
+uvicorn==0.32.1
+pydantic==2.13.4
+python-multipart==0.0.27
+httpx==0.28.1
+requests==2.33.1
+redis==5.2.0
+
+# --- 视频 / 音频 / 图像处理 ---
+moviepy==2.2.1
+pillow==11.3.0
+numpy==2.4.6
+imageio-ffmpeg==0.6.0
+pydub==0.25.1
+audioop-lts==0.2.2; python_version >= "3.13"
+
+# --- LLM 多供应商 SDK ---
+openai==2.24.0
+litellm==1.86.2
+google-genai==2.11.0
+dashscope==1.20.14
+
+# --- TTS / 语音 ---
+edge-tts==7.2.7
+azure-cognitiveservices-speech==1.41.1
+
+# --- 字幕 / 素材 ---
+faster-whisper==1.1.0
+yt-dlp==2026.7.4
+
+# --- 工具 ---
+loguru==0.7.3
+pyyaml==6.0.3
+toml==0.10.2
+packaging==24.2
+socksio==1.0.0

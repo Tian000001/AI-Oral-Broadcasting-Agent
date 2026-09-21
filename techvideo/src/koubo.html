@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>口播视频工作台</title>
+  <link rel="stylesheet" href="./main.css?v=__VERSION__" />
+</head>
+<body>
+  <div id="root"></div>
+  <div id="boot-error" style="display:none;position:fixed;inset:0;background:#0b0f17;color:#f87171;font-family:system-ui,sans-serif;padding:40px;white-space:pre-wrap;overflow:auto;z-index:9999"></div>
+  <script>
+    window.addEventListener('error', function(e) {
+      var el = document.getElementById('boot-error');
+      if (el) { el.style.display = 'block'; el.textContent += 'ERROR: ' + e.message + '\n' + (e.filename || '') + ':' + (e.lineno || '') + '\n\n'; }
+    });
+    window.addEventListener('unhandledrejection', function(e) {
+      var el = document.getElementById('boot-error');
+      if (el) { el.style.display = 'block'; el.textContent += 'UNHANDLED REJECTION: ' + (e.reason && e.reason.stack ? e.reason.stack : String(e.reason)) + '\n\n'; }
+    });
+  </script>
+  <script type="module" src="./main.js?v=__VERSION__"></script>
+</body>
+</html>
