@@ -33,6 +33,7 @@ from app.utils import utils
 from app.models.vendor_registry import resolve_vendor_override, CAP_IMAGE, VENDOR_REGISTRY
 from app.services.material import get_api_key as _pexels_get_api_key, _get_tls_verify
 from app.services.agent import asset as asset_store
+from app.services import llm
 import ssl
 
 # PlanVideo 渲染帧率（与 techvideo/src/PlanVideo.tsx 保持一致）。
@@ -387,6 +388,19 @@ class SceneModel(BaseModel):
     kickerScale: float = 0
     pointsScale: float = 0
     quoteScale: float = 0
+    # —— 素材库新增构件（P2）：counter / ring / bars / cards / code / chat / typewriter ——
+    revealSpeed: float = 0
+    counterTo: float = 0
+    counterFrom: float = 0
+    counterPrefix: str = ""
+    counterSuffix: str = ""
+    counterDecimals: int = 0
+    percent: float = 0
+    bars: list[dict] = []
+    cards: list[dict] = []
+    code: str = ""
+    codeLang: str = ""
+    messages: list[dict] = []
 
 
 class RenderRequest(BaseModel):
@@ -515,6 +529,36 @@ async def render_techvideo(request: Request, body: RenderRequest):
                 "kickerScale": float(s.kickerScale) if s.kickerScale else 0,
                 "pointsScale": float(s.pointsScale) if s.pointsScale else 0,
                 "quoteScale": float(s.quoteScale) if s.quoteScale else 0,
+                # 素材库新增构件（P2）：透传给 Remotion，保证预览与导出一致
+                "revealSpeed": float(s.revealSpeed) if s.revealSpeed else 0,
+                "counterTo": float(s.counterTo) if s.counterTo else 0,
+                "counterFrom": float(s.counterFrom) if s.counterFrom else 0,
+                "counterPrefix": s.counterPrefix or "",
+                "counterSuffix": s.counterSuffix or "",
+                "counterDecimals": int(s.counterDecimals) if s.counterDecimals else 0,
+                "percent": float(s.percent) if s.percent else 0,
+                "bars": [
+                    {"label": b.get("label", ""), "value": float(b.get("value", 0) or 0)}
+                    for b in (s.bars or []) if isinstance(b, dict)
+                ],
+                "cards": [
+                    {
+                        "emoji": c.get("emoji", ""),
+                        "title": c.get("title", ""),
+                        "desc": c.get("desc", ""),
+                    }
+                    for c in (s.cards or []) if isinstance(c, dict)
+                ],
+                "code": s.code or "",
+                "codeLang": s.codeLang or "",
+                "messages": [
+                    {
+                        "side": m.get("side", "other"),
+                        "from": m.get("from", ""),
+                        "text": m.get("text", ""),
+                    }
+                    for m in (s.messages or []) if isinstance(m, dict)
+                ],
             }
         )
     # 口播素材时长：前端读到则直接用；未读到（0）时服务端 ffprobe 兜底探测。
@@ -1071,5 +1115,212 @@ def _download_pexels_image(image_url: str) -> tuple[str, str]:
     fn = f"{uuid.uuid4().hex}{ext}"
     (uploads_dir / fn).write_bytes(content)
     return f"uploads/{fn}", ""
+
+
+# ============================================================================
+# AI 智能分镜（LLM 文案 → 结构化 scenes）
+# ----------------------------------------------------------------------------
+# 把整篇口播文案交给已配置的大模型，自动切分成段、按叙事语义挑选动画素材类型
+# 并填好画面字段，产出与 TalkStudio/PlanVideo 兼容的 scenes 数组。前端在
+# 「文案分割」页勾选「AI 智能分镜」时调用本接口；网络失败 / 未配置模型 /
+# 解析失败时返回非 200，前端自动降级到离线规则式 _autoScene。
+# ============================================================================
+
+# LLM 可用的素材类型（必须与 techvideo/src/sceneAssets.ts、PlanVideo 保持一致）
+_STORYBOARD_TYPES = {
+    "cover", "title", "points", "quote", "data", "chart", "timeline",
+    "compare", "cite", "conclusion",
+    "typewriter", "karaoke", "banner", "counter", "ring", "bars",
+    "checklist", "cards", "kb", "code", "chat",
+}
+
+
+def _est_frames_from_text(text: str) -> int:
+    n = len((text or "").strip())
+    return max(60, min(900, round(n / 4 * 30)))
+
+
+def _coerce_storyboard_scene(raw: dict) -> dict:
+    """把 LLM 返回的单个场景规整为安全结构：校验类型、补齐必填、算时长。"""
+    if not isinstance(raw, dict):
+        return {}
+    t = str(raw.get("type") or "title").strip().lower()
+    if t not in _STORYBOARD_TYPES:
+        t = "title"
+
+    def _str_list(key):
+        v = raw.get(key)
+        if isinstance(v, list):
+            return [str(x).strip() for x in v if str(x).strip() != ""]
+        return []
+
+    def _dict_list(key):
+        v = raw.get(key)
+        return [x for x in v if isinstance(x, dict)] if isinstance(v, list) else []
+
+    def _num(key, default=0):
+        v = raw.get(key)
+        return v if isinstance(v, (int, float)) and not isinstance(v, bool) else default
+
+    narration = str(raw.get("narration") or "").strip()
+    scene = {
+        "type": t,
+        "title": str(raw.get("title") or "").strip(),
+        "kicker": str(raw.get("kicker") or "").strip(),
+        "narration": narration,
+        "points": _str_list("points"),
+        "keywords": _str_list("keywords"),
+        "emphasis": _str_list("emphasis"),
+        "caption": str(raw.get("caption") or "").strip(),
+        "quote": str(raw.get("quote") or "").strip(),
+        "imageUrl": str(raw.get("imageUrl") or "").strip(),
+        "imagePrompt": str(raw.get("imagePrompt") or "").strip(),
+        "animation": str(raw.get("animation") or "").strip(),
+        "layout": str(raw.get("layout") or "").strip(),
+        "subtitles": [
+            {"start": float(e.get("start", 0) or 0), "end": float(e.get("end", 0) or 0), "text": str(e.get("text", ""))}
+            for e in _dict_list("subtitles")
+        ],
+        "counterTo": _num("counterTo"),
+        "counterFrom": _num("counterFrom"),
+        "counterPrefix": str(raw.get("counterPrefix") or ""),
+        "counterSuffix": str(raw.get("counterSuffix") or ""),
+        "counterDecimals": int(_num("counterDecimals")),
+        "percent": _num("percent"),
+        "revealSpeed": _num("revealSpeed"),
+        "bars": _dict_list("bars"),
+        "cards": _dict_list("cards"),
+        "events": _dict_list("events"),
+        "columns": _dict_list("columns"),
+        "messages": _dict_list("messages"),
+        "code": str(raw.get("code") or ""),
+        "codeLang": str(raw.get("codeLang") or ""),
+        "source": str(raw.get("source") or ""),
+        "author": str(raw.get("author") or ""),
+    }
+    # chart 单独保留（渲染器需要 kind/labels/values）
+    if isinstance(raw.get("chart"), dict):
+        scene["chart"] = raw["chart"]
+    # 时长：优先 LLM 的 durationFrames / durationSec，否则按口播字数估算
+    dur = raw.get("durationFrames")
+    if isinstance(dur, (int, float)) and dur >= 30:
+        scene["durationFrames"] = int(min(900, dur))
+    else:
+        ds = raw.get("durationSec")
+        if isinstance(ds, (int, float)) and 2 <= ds <= 30:
+            scene["durationFrames"] = int(max(60, min(900, round(ds * FPS))))
+        else:
+            scene["durationFrames"] = _est_frames_from_text(narration or scene["title"])
+    return scene
+
+
+class StoryboardRequest(BaseModel):
+    text: str = ""
+    subject: str = ""
+    language: str = ""
+    max_scenes: int = 0
+
+
+_TYPE_GUIDE = """
+可用 type 及各自需要的字段（其余字段留空/省略）：
+- cover 封面：title, kicker, narration
+- title 标题：title, points(可选)
+- points 要点列表：title, points[]
+- quote 金句：quote（一句抓人的短金句）
+- data 关键词高亮：title, keywords[]
+- chart 图表：title, chart:{kind(bar|line|pie|radar|stacked|area),labels[],values[],unit?}
+- timeline 时间线：title, events:[{time,text}]
+- compare 对比：title, columns:[{name,items[]}]
+- cite 引用：source, author
+- conclusion 结尾：title
+- typewriter 打字机：title（一句悬念/钩子，逐字敲出）
+- karaoke 逐词字幕：subtitles:[{start,end,text}]（把口播按词/短语切，秒级时间戳）
+- banner 划线强调：title, emphasis[]（要划线的关键词）
+- counter 数字滚动：counterTo(必填数字), counterFrom?, counterSuffix?(如 % 万 元), counterPrefix?
+- ring 进度环：percent(0-100), title
+- bars 数据条：title, bars:[{label,value}]（2-5 条占比/排名）
+- checklist 打勾清单：title, points[]（并列要点/步骤）
+- cards 卡片网格：title, cards:[{emoji,title,desc}]（并列能力/要点，2-6 张）
+- kb Ken Burns：imageUrl 或 imagePrompt, caption（需要画面配图时用）
+- code 代码窗口：code（多行代码字符串）, codeLang, title(文件名)
+- chat 对话气泡：messages:[{side(me|other),from,text}]（问答/评价类）
+""".strip()
+
+
+@router.post("/techvideo/storyboard", summary="AI 智能分镜：口播文案 → 结构化场景")
+async def storyboard_scenes(request: Request, body: StoryboardRequest):
+    text = (body.text or "").strip()
+    if len(text) < 4:
+        return utils.get_response(400, None, "文案太短，无法分镜。")
+
+    lang_hint = f"输出语言：{body.language}。" if body.language else "沿用文案原语言（多为中文）。"
+    max_hint = (
+        f"最多拆成 {body.max_scenes} 个场景。"
+        if body.max_scenes > 0
+        else "按叙事节奏自然分段，通常 4~12 段。"
+    )
+    subject_hint = ""
+    subj = (body.subject or "").strip()
+    if subj:
+        subject_hint = (
+            f"\n9. 本条视频主题/人设语气：{subj}。请据此把握叙事重点与画面风格"
+            "（例如偏专业就多用数据类素材，偏故事就多用金句/对话类素材）。\n"
+        )
+    example = json.dumps(
+        [
+            {"type": "cover", "title": "AI 口播流水线", "kicker": "干货", "narration": "一天产一条 AI 口播，我是怎么做到的？"},
+            {"type": "counter", "title": "", "counterTo": 300, "counterSuffix": "%", "narration": "效率直接提升了 300%"},
+            {"type": "checklist", "title": "三步搞定", "points": ["定选题", "写文案", "一键出片"], "narration": "首先定选题，再写文案，然后一键出片"},
+        ],
+        ensure_ascii=False,
+    )
+    prompt = (
+        "# 角色：短视频口播分镜师\n"
+        "把下面的口播文案切分成一串「场景」，为每个场景挑选最贴合内容的动画素材类型并填好画面字段。\n\n"
+        "# 硬性规则\n"
+        "1. 只输出一个 JSON 数组，不要任何解释、不要 markdown 代码围栏。\n"
+        "2. 每个元素是一个场景对象，必须含 type 与 narration；narration 是这一镜对应的【口播原文片段】，"
+        "必须从原文逐字截取、不改写不增删（用于配音与字幕）。\n"
+        "3. 所有 narration 依原文顺序拼接后应等于整篇文案（不丢句、不重复）。\n"
+        "4. type 只能取下面列表里的值；拿不准就用 title/points，别造新类型。\n"
+        "5. 画面字段（points/cards/bars/counterTo/percent…）是为配合 narration 的可视化提炼，可短、可用关键词。\n"
+        "6. 数字/百分比/排名优先用 counter/ring/bars；并列要点用 checklist 或 cards；"
+        "对比用 compare；时间演进用 timeline；问答或评价用 chat；代码用 code；开场钩子用 typewriter 或 cover。\n"
+        f"7. {max_hint}\n"
+        f"8. {lang_hint}\n"
+        + subject_hint
+        + "\n"
+        + _TYPE_GUIDE
+        + "\n\n# 输出示例（仅示意结构，勿照抄内容）\n"
+        + example
+        + "\n\n# 口播文案\n"
+        + text
+    )
+
+    try:
+        raw = await asyncio.to_thread(llm._generate_response, prompt)
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"storyboard LLM call failed: {e}")
+        return utils.get_response(500, None, "大模型调用失败，请降级为规则式分镜。")
+
+    if not raw or (isinstance(raw, str) and raw.startswith("Error:")):
+        logger.warning(f"storyboard LLM error response: {str(raw)[:200]}")
+        return utils.get_response(500, None, "大模型未返回有效结果，请降级为规则式分镜。")
+
+    try:
+        arr = json.loads(llm._strip_code_fence(raw))
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"storyboard JSON parse failed: {e}; head={str(raw)[:200]}")
+        return utils.get_response(500, None, "大模型返回不是合法 JSON，请降级为规则式分镜。")
+
+    if not isinstance(arr, list) or not arr:
+        return utils.get_response(500, None, "大模型未产出场景数组，请降级为规则式分镜。")
+
+    scenes = [sc for sc in (_coerce_storyboard_scene(x) for x in arr) if sc]
+    if not scenes:
+        return utils.get_response(500, None, "场景解析后为空，请降级为规则式分镜。")
+
+    logger.info(f"storyboard ok: {len(scenes)} scenes from {len(text)} chars")
+    return utils.get_response(200, {"scenes": scenes})
 
 

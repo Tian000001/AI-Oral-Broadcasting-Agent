@@ -2,6 +2,8 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Player, type PlayerRef } from "@remotion/player";
 import { PlanVideo } from "./PlanVideo";
 import SceneEditor from "./SceneEditor";
+import Timeline from "./Timeline";
+import { LIBRARY_ASSETS, ASSET_DEFAULTS } from "./sceneAssets";
 
 const FPS = 30;
 
@@ -80,10 +82,14 @@ export default function TalkStudio() {
   const [savedAt, setSavedAt] = useState<string>("");
   const playerRef = useRef<PlayerRef>(null);
   const projRef = useRef<HTMLInputElement>(null);
-  const dragIdx = useRef<number | null>(null);
-  const trackRef = useRef<HTMLDivElement>(null);
-  const playheadRef = useRef<HTMLDivElement>(null);
   const [fullscreen, setFullscreen] = useState(false);
+
+  // P4：时间线结构操作（增删/排序/改时长/插入素材）的撤销/重做历史。
+  // 快照为 scenes 的浅拷贝（编辑均走不可变更新，嵌套数组每次重建，浅拷贝足够安全）。
+  const past = useRef<any[][]>([]);
+  const future = useRef<any[][]>([]);
+  const lastPush = useRef<{ t: number; key: string }>({ t: 0, key: "" });
+  const [histTick, setHistTick] = useState(0);
 
   // 派生：导出模式是否为透明叠加层（渲染链路沿用 transparent 语义）。
   const transparent = exportMode === "transparent";
@@ -191,6 +197,7 @@ export default function TalkStudio() {
     updateScene(i, { points: text.split("\n").map((x) => x.trim()).filter(Boolean) });
   }
   function addScene() {
+    pushHistory();
     const at = Math.min(selected + 1, scenes.length);
     const ns = [...scenes];
     ns.splice(at, 0, blankScene({ type: "points", title: "新场景", points: ["要点"] }));
@@ -199,12 +206,14 @@ export default function TalkStudio() {
   }
   function removeScene(i: number) {
     if (scenes.length <= 1) return;
+    pushHistory();
     setScenes((prev) => prev.filter((_, idx) => idx !== i));
     setSelected((s) => Math.max(0, Math.min(s, scenes.length - 2)));
   }
   function moveScene(i: number, dir: -1 | 1) {
     const j = i + dir;
     if (j < 0 || j >= scenes.length) return;
+    pushHistory();
     const ns = [...scenes];
     [ns[i], ns[j]] = [ns[j], ns[i]];
     setScenes(ns);
@@ -213,6 +222,7 @@ export default function TalkStudio() {
   function insertChapter(kind: string) {
     const t = TEMPLATES[kind];
     if (!t) return;
+    pushHistory();
     const at = Math.min(selected + 1, scenes.length);
     const ns = [...scenes];
     ns.splice(at, 0, blankScene({ ...t }));
@@ -220,7 +230,95 @@ export default function TalkStudio() {
     setSelected(at);
   }
   function insertStandard() {
+    pushHistory();
     setScenes((prev) => [...prev, ...STANDARD.map((k) => blankScene({ ...TEMPLATES[k] }))]);
+  }
+  // 从「动画素材库」一键插入一个带示例内容的场景（可在右侧属性面板继续改）。
+  function insertAsset(type: string) {
+    pushHistory();
+    const at = Math.min(selected + 1, scenes.length);
+    const ns = [...scenes];
+    ns.splice(at, 0, blankScene({ ...(ASSET_DEFAULTS[type] || {}), type }));
+    setScenes(ns);
+    setSelected(at);
+  }
+
+  // —— P4 撤销/重做 ——
+  function snapshotScenes() {
+    return scenes.map((s: S) => ({ ...s }));
+  }
+  function pushHistory(key?: string) {
+    const now = Date.now();
+    // 拖拽改时长等高频操作：同一 key 在 700ms 内只记一次快照，避免污染历史栈。
+    if (key && lastPush.current.key === key && now - lastPush.current.t < 700) {
+      lastPush.current.t = now;
+      return;
+    }
+    past.current.push(snapshotScenes());
+    if (past.current.length > 120) past.current.shift();
+    future.current = [];
+    lastPush.current = { t: now, key: key || "" };
+    setHistTick((t) => t + 1);
+  }
+  function undo() {
+    if (!past.current.length) return;
+    future.current.push(snapshotScenes());
+    const prev = past.current.pop()!;
+    setScenes(prev);
+    setSelected((s) => Math.max(0, Math.min(s, prev.length - 1)));
+    lastPush.current = { t: 0, key: "" };
+    setHistTick((t) => t + 1);
+  }
+  function redo() {
+    if (!future.current.length) return;
+    past.current.push(snapshotScenes());
+    const next = future.current.pop()!;
+    setScenes(next);
+    setSelected((s) => Math.max(0, Math.min(s, next.length - 1)));
+    setHistTick((t) => t + 1);
+  }
+  // 键盘：Ctrl/⌘+Z 撤销，Ctrl/⌘+Shift+Z 或 Ctrl/⌘+Y 重做（输入框内不劫持文本撤销）。
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const el = e.target as HTMLElement | null;
+      const tag = el?.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA" || el?.isContentEditable) return;
+      const meta = e.ctrlKey || e.metaKey;
+      if (!meta) return;
+      const k = e.key.toLowerCase();
+      if (k === "z" && !e.shiftKey) {
+        e.preventDefault();
+        undo();
+      } else if ((k === "z" && e.shiftKey) || k === "y") {
+        e.preventDefault();
+        redo();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // —— <Timeline> 回调：擦洗 / 选中 / 排序 / 改时长 ——
+  function seekToFrame(f: number) {
+    try {
+      playerRef.current?.seekTo(Math.max(0, Math.min(playerDur - 1, f)));
+      playerRef.current?.pause();
+    } catch {}
+  }
+  function tlReorder(from: number, to: number) {
+    pushHistory();
+    setScenes((prev) => {
+      const ns = [...prev];
+      const [m] = ns.splice(from, 1);
+      ns.splice(to, 0, m);
+      return ns;
+    });
+    setSelected(to);
+  }
+  function tlResize(i: number, durFrames: number) {
+    pushHistory(`resize:${i}`);
+    setScenes((prev) => prev.map((s: S, idx: number) => (idx === i ? { ...s, durationFrames: durFrames } : s)));
   }
 
   function seekToScene(i: number) {
@@ -232,21 +330,7 @@ export default function TalkStudio() {
     } catch {}
   }
 
-  // 时间线播放头：rAF 直写 DOM 的 left，避免逐帧 setState 触发 Player 重渲
-  useEffect(() => {
-    let raf = 0;
-    const loop = () => {
-      try {
-        const f = playerRef.current?.getCurrentFrame() ?? 0;
-        const tr = trackRef.current;
-        const ph = playheadRef.current;
-        if (tr && ph && playerDur > 0) ph.style.left = (f / playerDur) * 100 + "%";
-      } catch {}
-      raf = requestAnimationFrame(loop);
-    };
-    raf = requestAnimationFrame(loop);
-    return () => cancelAnimationFrame(raf);
-  }, [playerDur]);
+  // 时间线播放头已迁移到 <Timeline> 内部（rAF 直写 DOM）。
 
   async function toggleFullscreen() {
     const next = !fullscreen;
@@ -336,6 +420,7 @@ export default function TalkStudio() {
   // 场景时长按比例缩放至视频全长（各场景保持相对节奏，总和≈素材时长）。
   function fitScenesToVideo() {
     if (!personVideoDuration || !scenes.length) return;
+    pushHistory();
     const target = Math.max(30, Math.round(personVideoDuration * FPS));
     const cur = total || 1;
     setScenes((prev) =>
@@ -370,6 +455,7 @@ export default function TalkStudio() {
   }
   function clearProject() {
     if (!confirm("清空当前工程并恢复标准开场结构？")) return;
+    pushHistory();
     localStorage.removeItem(PROJECT_KEY);
     setScenes(STANDARD.map((k) => blankScene({ ...TEMPLATES[k] })));
     setPersonVideo("");
@@ -460,6 +546,9 @@ export default function TalkStudio() {
   }
 
   const sel = scenes[selected] || blankScene();
+  // histTick 参与运算仅为了让「撤销/重做」按钮的禁用态随历史栈变化重算（值恒真，不改逻辑）。
+  const canUndo = histTick >= 0 && past.current.length > 0;
+  const canRedo = histTick >= 0 && future.current.length > 0;
 
   return (
     <div className="ts">
@@ -567,6 +656,8 @@ export default function TalkStudio() {
               <option value="zoom">缩放</option>
               <option value="blur">模糊</option>
               <option value="wipe">擦除</option>
+              <option value="flip">翻转 3D</option>
+              <option value="iris">圆形展开</option>
               <option value="none">无</option>
             </select></label>
           <label className="ts-field"><span>口播叠加</span>
@@ -672,6 +763,23 @@ export default function TalkStudio() {
           </div>
           <button className="ts-btn primary" onClick={insertStandard}>插入标准结构（开场→结尾）</button>
         </div>
+
+        <div className="ts-sec">
+          <h4>动画素材库</h4>
+          <p className="ts-hint" style={{ marginTop: 0 }}>点击插入一个带动画的场景（含示例内容），再到右侧属性面板改文字/数值。</p>
+          <div className="ts-tags">
+            {LIBRARY_ASSETS.map((a) => (
+              <button
+                key={a.type}
+                className="ts-tag"
+                title={a.hint}
+                onClick={() => insertAsset(a.type)}
+              >
+                {a.emoji} {a.label}
+              </button>
+            ))}
+          </div>
+        </div>
       </aside>
 
       {/* 中：预览 + 章节标签 + 静态审阅 */}
@@ -760,55 +868,38 @@ export default function TalkStudio() {
         </div>
       </aside>
 
-      {/* 下：时间线 */}
+      {/* 下：RVE 式可视化时间轴 */}
       <div className="ts-timeline ts-panel">
         <div className="ts-tl-head">
-          <span>时间线（拖拽排序 · 点击跳转）</span>
+          <span>时间线（拖动排序 · 拖右边缘改时长 · 点/拖标尺擦洗）</span>
           <div className="ts-row">
+            <button className="ts-btn" onClick={undo} disabled={!canUndo} title="撤销 (Ctrl/⌘+Z)">↶ 撤销</button>
+            <button className="ts-btn" onClick={redo} disabled={!canRedo} title="重做 (Ctrl/⌘+Shift+Z)">↷ 重做</button>
             <button className="ts-btn primary" onClick={render} disabled={exporting}>
               {exporting ? "渲染中…" : "⤓ 导出成片"}
             </button>
           </div>
         </div>
-        <div className="ts-track" ref={trackRef}>
-          <div className="ts-playhead" ref={playheadRef} />
-          {scenes.map((s: S, i: number) => {
-            const w = total > 0 ? (durations[i] / total) * 100 : 0;
-            return (
-              <div
-                key={i}
-                className={`ts-clip${i === selected ? " active" : ""}`}
-                style={{ width: w + "%" }}
-                draggable
-                onDragStart={() => (dragIdx.current = i)}
-                onDragOver={(e) => e.preventDefault()}
-                onDrop={() => {
-                  const from = dragIdx.current;
-                  if (from === null || from === i) return;
-                  const ns = [...scenes];
-                  const [m] = ns.splice(from, 1);
-                  ns.splice(i, 0, m);
-                  setScenes(ns);
-                  setSelected(i);
-                  dragIdx.current = null;
-                }}
-                onClick={() => seekToScene(i)}
-                title={`${s.kicker || s.title || "场景" + (i + 1)} · ${durations[i]}帧`}
-              >
-                <div className="ts-clip-head">
-                  <span className="ts-clip-i">{String(i + 1).padStart(2, "0")}</span>
-                  <span className="ts-clip-d">{(durations[i] / FPS).toFixed(1)}s</span>
-                </div>
-                <div className="ts-clip-t">{s.kicker || s.title || "场景" + (i + 1)}</div>
-                {s.videoLayout && (
-                  <span className="ts-clip-badge">
-                    {s.videoLayout === "underlay" ? "混排" : s.videoLayout === "cross-cut" ? "硬切" : "画中画"}
-                  </span>
-                )}
-              </div>
-            );
-          })}
-        </div>
+        <Timeline
+          scenes={scenes}
+          fps={FPS}
+          durations={durations}
+          starts={starts}
+          total={total}
+          playerDur={playerDur}
+          selected={selected}
+          getFrame={() => {
+            try {
+              return playerRef.current?.getCurrentFrame() ?? 0;
+            } catch {
+              return 0;
+            }
+          }}
+          onSelect={(i) => seekToScene(i)}
+          onSeekFrame={seekToFrame}
+          onReorder={tlReorder}
+          onResize={tlResize}
+        />
       </div>
 
       {message && <div className="ts-toast ok">{message}</div>}

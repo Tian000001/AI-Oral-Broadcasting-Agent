@@ -1,6 +1,6 @@
 """TTQ-Video 应用包元数据。"""
 
-__version__ = "1.9.8"
+__version__ = "1.9.9"
 
 
 def bump_version(version: str) -> str:

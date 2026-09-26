@@ -13,6 +13,8 @@ import {
 } from "remotion";
 import { z } from "zod";
 import { Backdrop } from "./HelloWorld/Backdrop";
+import { LibraryScene } from "./SceneLibrary";
+import { LIBRARY_TYPES } from "./sceneAssets";
 
 export type BgTheme = "dark" | "light";
 
@@ -118,6 +120,24 @@ export const columnSchema = z.object({
   items: z.array(z.string()),
 });
 
+// —— 素材库新增构件的子结构 ——
+export const barItemSchema = z.object({
+  label: z.string(),
+  value: z.number(),
+});
+
+export const cardItemSchema = z.object({
+  emoji: z.string().optional(),
+  title: z.string().optional(),
+  desc: z.string().optional(),
+});
+
+export const chatMessageSchema = z.object({
+  side: z.enum(["me", "other"]).optional(),
+  from: z.string().optional(),
+  text: z.string(),
+});
+
 export const sceneSchema = z.object({
   type: z.string(),
   title: z.string(),
@@ -141,7 +161,22 @@ export const sceneSchema = z.object({
   fontScale: z.number().optional(), // 字号缩放（默认 1）
   titleScale: z.number().optional(), // 标题单独字号缩放（默认 1，专治标题过大）
   layout: z.enum(["center", "left", "right", "split", "top", "bottom", "card", "magazine"]).optional(), // 版式（v1.9.2 起扩到 8 种）
-  animation: z.enum(["fade", "slide", "zoom", "none"]).optional(), // 入场动效
+  animation: z
+    .enum(["fade", "slide", "zoom", "blur", "wipe", "flip", "iris", "none"])
+    .optional(), // 入场动效（含素材库新增 flip/iris）
+  // —— 素材库新增构件字段（P2）——
+  revealSpeed: z.number().optional(), // typewriter/code：每秒揭示字数
+  counterTo: z.number().optional(), // counter：目标数值
+  counterFrom: z.number().optional(), // counter：起始数值（默认 0）
+  counterPrefix: z.string().optional(), // counter：前缀
+  counterSuffix: z.string().optional(), // counter：后缀（单位）
+  counterDecimals: z.number().optional(), // counter：小数位
+  percent: z.number().optional(), // ring：百分比 0-100
+  bars: z.array(barItemSchema).optional(), // bars：数据条
+  cards: z.array(cardItemSchema).optional(), // cards：卡片网格
+  code: z.string().optional(), // code：代码正文
+  codeLang: z.string().optional(), // code：语言标注（仅显示用）
+  messages: z.array(chatMessageSchema).optional(), // chat：对话气泡
   // —— 节奏标记（P1）——
   durationSec: z.number().optional(), // 建议时长（秒）
   emphasis: z.array(z.string()).optional(), // 强调词（视觉放大）
@@ -180,7 +215,7 @@ export const planSchema = z.object({
   personVideoDuration: z.number().optional(), // 口播素材时长（秒）；>0 时整体时长以此为准
   videoLayout: z.enum(["cross-cut", "pip", "underlay"]).optional(), // 硬切 / 画中画 / 底片混排
   aspect: z.enum(["16:9", "9:16"]).optional(),
-  transition: z.enum(["fade", "slide", "zoom", "blur", "wipe", "none"]).optional(), // 统一转场（P3）
+  transition: z.enum(["fade", "slide", "zoom", "blur", "wipe", "flip", "iris", "none"]).optional(), // 统一转场（P3 + 素材库 flip/iris）
   // —— 预览/导出 显示开关（隐藏字幕 / 隐藏旁白）——
   showSubtitle: z.boolean().optional(), // 是否渲染底部字幕条（默认 true）
   showNarration: z.boolean().optional(), // 是否在内容区显示旁白说明（默认 true）
@@ -487,6 +522,8 @@ const SceneView: React.FC<{
   let dx = 0;
   let scaleT = 1;
   let blur = 0;
+  let flipDeg = 0;
+  let clipPath = "none";
   if (tr === "fade" || tr === "wipe") {
     opacity = Math.min(appear, leaveRaw);
   } else if (tr === "slide") {
@@ -510,12 +547,30 @@ const SceneView: React.FC<{
       extrapolateLeft: "clamp",
     });
     blur = enterB + exitB;
+  } else if (tr === "flip") {
+    // 3D 翻转：切入 -90°→0°，切出 0°→90°
+    opacity = Math.min(appear, leaveRaw) * 0.7 + 0.3;
+    const enterR = interpolate(appear, [0, 1], [-90, 0]);
+    const exitR = interpolate(frame, [exitStart, dur - 2], [0, 90], {
+      extrapolateLeft: "clamp",
+    });
+    flipDeg = enterR + exitR;
+  } else if (tr === "iris") {
+    // 圆形展开：半径随入场增长、出场收缩（clip-path 决定显隐，opacity 保持不透明）
+    opacity = 1;
+    const rEnter = interpolate(appear, [0, 1], [0, 150], { extrapolateRight: "clamp" });
+    const rExit = interpolate(leaveRaw, [0, 1], [0, 150], { extrapolateRight: "clamp" });
+    const r = Math.min(rEnter, rExit);
+    clipPath = `circle(${r}% at 50% 50%)`;
   } else {
     // none（硬切）：立即出现/消失
     opacity = 1;
   }
   const animOpacity = opacity;
-  const animTransform = `translateX(${dx}px) scale(${scaleT})`;
+  const animTransform = `translateX(${dx}px) scale(${scaleT})${
+    flipDeg !== 0 ? ` perspective(1600px) rotateY(${flipDeg}deg)` : ""
+  }`;
+  const animClipPath = clipPath;
   const animFilter = blur > 0 ? `blur(${blur}px)` : "none";
   // wipe 转场：品牌渐变条在切入/切出时横扫（与相邻场景衔接成连续擦除）。
   let wipeX = 100;
@@ -543,6 +598,10 @@ const SceneView: React.FC<{
   const isTimeline = type === "timeline";
   const isCompare = type === "compare";
   const isCite = type === "cite";
+  const isLibrary = LIBRARY_TYPES.includes(type); // 素材库新增构件（SceneLibrary 渲染）
+  // 需要铺满整屏（图片/背景推到画面边缘）的素材：去掉 SceneView 外层内边距，由其自行排版。
+  const fullBleed = type === "kb";
+  const scenePad = fullBleed ? "0px" : "120px 170px";
 
   // 节奏标记（P1）：强调词高亮——命中强调词的要点/关键词会被放大、着主色、加白描边。
   const emphasis = scene.emphasis || [];
@@ -563,10 +622,11 @@ const SceneView: React.FC<{
     <AbsoluteFill
       style={{
         justifyContent,
-        padding: "120px 170px",
+        padding: scenePad,
         opacity: animOpacity,
         transform: animTransform,
         filter: animFilter,
+        clipPath: animClipPath !== "none" ? animClipPath : undefined,
       }}
     >
       {/* wipe 转场：品牌渐变条横扫（切入/切出） */}
@@ -882,7 +942,21 @@ const SceneView: React.FC<{
       )}
       {isCite && <CiteCard scene={scene} c1={c1} c2={c2} P={P} fs={fs} />}
 
-      {!isCover && !isConclusion && !isImage && !isQuote && !isTimeline && !isCompare && !isCite && !isChart && (
+      {isLibrary && (
+        <LibraryScene
+          type={type}
+          scene={scene}
+          c1={c1}
+          c2={c2}
+          P={P}
+          fs={fs}
+          align={alignItems}
+          textAlign={textAlign}
+          imgSrc={resolveMediaSrc(scene.imageUrl)}
+        />
+      )}
+
+      {!isCover && !isConclusion && !isImage && !isQuote && !isTimeline && !isCompare && !isCite && !isChart && !isLibrary && (
         <>
           {/* 杂志版式：左上角竖排眉标已经在外层渲染了，此处不再渲染 kicker */}
           {layout !== "magazine" && scene.kicker ? (
@@ -1055,7 +1129,7 @@ const SceneView: React.FC<{
 
       {/* 字幕轨（底部专用，不被旁白占用）。显示开关 showSubtitle 关闭时整条隐藏，
           以便后续交给第三方平台（如剪映）制作字幕。 */}
-      {showSubtitle && subtitleText ? (
+      {showSubtitle && subtitleText && !isLibrary ? (
         <div
           style={{
             position: "absolute",

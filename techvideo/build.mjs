@@ -8,6 +8,7 @@ import * as esbuild from "esbuild";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 import { writeFileSync, readFileSync, mkdirSync } from "node:fs";
+import { createHash } from "node:crypto";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 // 依赖目录：使用 techvideo/ 自身的 node_modules（`npm install` 产物）。
@@ -37,9 +38,9 @@ const errorHtml = `
     });
   </script>`;
 
-function buildView({ name, entry, outdir, title }) {
+async function buildView({ name, entry, outdir, title }) {
   mkdirSync(outdir, { recursive: true });
-  const result = esbuild.build({
+  const result = await esbuild.build({
     entryPoints: { main: resolve(__dirname, entry) },
     bundle: true,
     outdir,
@@ -56,18 +57,27 @@ function buildView({ name, entry, outdir, title }) {
     logLevel: "info",
   });
 
+  // 按产物内容算短哈希拼进 ?v=，任何代码改动都自动破缓存（避免改了不生效）。
+  let stamp = VERSION;
+  try {
+    const js = readFileSync(resolve(outdir, "main.js"));
+    const css = readFileSync(resolve(outdir, "main.css"));
+    const h = createHash("sha256").update(js).update(css).digest("hex").slice(0, 8);
+    stamp = `${VERSION}-${h}`;
+  } catch {}
+
   const html = `<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>${title}</title>
-  <link rel="stylesheet" href="./main.css?v=${VERSION}" />
+  <link rel="stylesheet" href="./main.css?v=${stamp}" />
 </head>
 <body>
   <div id="root"></div>
 ${errorHtml}
-  <script type="module" src="./main.js?v=${VERSION}"></script>
+  <script type="module" src="./main.js?v=${stamp}"></script>
 </body>
 </html>`;
 

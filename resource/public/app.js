@@ -2613,7 +2613,15 @@ VIEWS.koucopy = {
             <p class="muted" id="kc_projState" style="margin:6px 0 0"></p>
           </div>
           <div class="field">
+            <label class="kc-check">
+              <input type="checkbox" id="kc_useAI" checked />
+              <span>🪄 AI 智能分镜（按文案语义自动配动画素材）</span>
+            </label>
+            <p class="muted" style="margin:6px 0 0">关闭或 AI 不可用时，自动改用离线规则式分镜。</p>
+          </div>
+          <div class="field">
             <button class="btn" id="kc_sendBtn" type="button" style="width:100%;justify-content:center">➤ 发送到口播视频</button>
+            <p class="muted" id="kc_sendHint" style="margin:8px 0 0"></p>
           </div>
           <div class="field">
             <button class="btn ghost" id="kc_dlBtn" type="button" style="width:100%;justify-content:center">⤓ 下载工程 JSON</button>
@@ -2838,12 +2846,68 @@ VIEWS.koucopy = {
     }
   },
   // 生成 TalkStudio 兼容工程：场景字段与 techvideo/src/TalkStudio.tsx blankScene 对齐
-  buildProject() {
-    const scenes = this._segs.map(t => ({
+  // 依据每段口播文案的内容启发式挑选动画素材类型（离线规则，无需后端；识别不准时
+  // 到口播工作台右侧「类型」下拉随时手动改）。命中不了就退回 title/points。
+  _autoScene(text) {
+    const t = (text || '').trim();
+    const base = {
       type: 'title', kicker: '', title: '', points: [],
       narration: t, caption: '', quote: '', imageUrl: '',
       durationFrames: this.estFrames(t), animation: 'fade', layout: 'center',
-    }));
+    };
+    if (!t) return base;
+    const sentences = (t.match(/[^。！？!?]+[。！？!?]?/g) || []).map(s => s.trim()).filter(Boolean);
+
+    // 1) 代码片段 → 代码窗口
+    if (/```|=>|\bfunction\b|\bconst\b|\blet\b|\bvar\b|\bimport\b|\bexport\b|\breturn\b|\bdef\b|print\(|console\.|SELECT\s|<\/\w+>/i.test(t)) {
+      return { ...base, type: 'code', title: '', code: t, codeLang: '' };
+    }
+    // 2) 单一数字 + 单位/百分比/较大数 → 数字滚动
+    const nums = t.match(/-?\d+(?:[.,]\d+)?/g) || [];
+    const pct = /(%|百分之)/.test(t);
+    const unitM = t.match(/(\d+(?:[.,]\d+)?)\s*(万元|亿元|万人|元|亿|万|千|倍|人次|人|款|个|天|年|月|日|岁|次)/);
+    const cleanNum = (s) => Number(String(s).replace(/,/g, ''));
+    if (nums.length === 1 && (pct || unitM || Math.abs(cleanNum(nums[0])) >= 100)) {
+      return {
+        ...base, type: 'counter', title: '',
+        counterTo: cleanNum(nums[0]), counterFrom: 0, counterDecimals: 0,
+        counterPrefix: /¥|￥|\$/.test(t) ? (t.match(/[¥￥\$]/) || [''])[0] : '',
+        counterSuffix: pct ? '%' : (unitM ? unitM[2] : ''),
+      };
+    }
+    // 3) 多数字 + 占比/排名 → 数据条
+    if (nums.length >= 2 && /(占比|排名|分布|分别|Top|前\d|第\d)/i.test(t)) {
+      const bars = sentences.slice(0, 6).map((s) => {
+        const m = s.match(/([^：:，,。]+)[：:，,]?\s*(-?\d+(?:\.\d+)?)\s*(%|万|亿|元|次|人|款)?/);
+        return m ? { label: m[1].trim().slice(0, 10), value: Number(m[2]) } : null;
+      }).filter(Boolean);
+      if (bars.length >= 2) return { ...base, type: 'bars', title: '', bars };
+    }
+    // 4) 枚举/步骤 → 打勾清单
+    const enumWords = /(首先|其次|然后|接着|再者|最后|第一|第二|第三|第四|步骤|流程|做法|要点|注意|清单)/;
+    const commaParts = t.split(/[，,、;；]/).map(s => s.trim()).filter(Boolean);
+    if (enumWords.test(t) || commaParts.length >= 3 || sentences.length >= 3) {
+      const points = (commaParts.length >= 3 ? commaParts : sentences).slice(0, 6);
+      return { ...base, type: 'checklist', title: '', points };
+    }
+    // 5) 问句/悬念钩子 → 打字机
+    if (/[?？]/.test(t) || /(为什么|为啥|怎么办|凭什么|你知道吗|揭秘|竟然|居然|千万别|一定要|想想|如果)/.test(t)) {
+      return { ...base, type: 'typewriter', title: t, revealSpeed: 14 };
+    }
+    // 6) 短促金句 → 金句卡
+    if (t.length <= 16) {
+      return { ...base, type: 'quote', quote: t, title: '' };
+    }
+    // 7) 兜底：有明确分点走 points，否则 title（保持原行为）
+    if (sentences.length >= 2) {
+      return { ...base, type: 'points', title: sentences[0].slice(0, 18), points: sentences.slice(1, 5) };
+    }
+    return { ...base, type: 'title', title: t.slice(0, 22) };
+  },
+  buildProject(scenesOverride) {
+    const scenes = Array.isArray(scenesOverride) && scenesOverride.length
+      ? scenesOverride
+      : this._segs.map(t => this._autoScene(t));
     let proj = null;
     try { proj = JSON.parse(localStorage.getItem(TALK_PROJECT_KEY) || 'null'); } catch (e) {}
     const keep = document.getElementById('kc_keepStyle') && document.getElementById('kc_keepStyle').checked;
@@ -2861,14 +2925,301 @@ VIEWS.koucopy = {
       scenes, savedAt: Date.now(),
     };
   },
-  send() {
+  // 主题 + 人设 → 传给 AI 分镜接口的语气/风格提示
+  _composeSubject() {
+    const subj = (document.getElementById('kc_subject') && document.getElementById('kc_subject').value || '').trim();
+    const pSel = document.getElementById('kc_persona');
+    const pName = pSel && pSel.value ? (pSel.options[pSel.selectedIndex] ? pSel.options[pSel.selectedIndex].text : '') : '';
+    const persona = pName && pName !== '不指定' ? `人设：${pName}` : '';
+    return [subj, persona].filter(Boolean).join('；');
+  },
+  // 调后端 AI 分镜；成功返回 scenes 数组，任何异常/非 200 都抛错由调用方降级。
+  async _aiStoryboard(text, subject) {
+    const data = await api('POST', '/techvideo/storyboard', { text, subject: subject || '', max_scenes: 0 });
+    const scenes = data && Array.isArray(data.scenes) ? data.scenes : null;
+    if (!scenes || !scenes.length) throw new Error('AI 未返回场景');
+    return scenes;
+  },
+  // 素材类型 → 图标/中文名（预览用，与 techvideo/src/sceneAssets.ts 对齐）
+  _typeMeta(t) {
+    const M = {
+      cover: ['🎬', '封面'], title: ['🔤', '标题'], points: ['📝', '要点'], quote: ['❝', '金句'],
+      data: ['🔑', '关键词'], chart: ['📊', '图表'], timeline: ['⏳', '时间线'], compare: ['⚖️', '对比'],
+      cite: ['📔', '引用'], conclusion: ['🎉', '结尾'], typewriter: ['⌨️', '打字机'], karaoke: ['🎤', '逐词字幕'],
+      banner: ['🖍️', '划线强调'], counter: ['🔢', '数字滚动'], ring: ['🎯', '进度环'], bars: ['📶', '数据条'],
+      checklist: ['✅', '打勾清单'], cards: ['🃏', '卡片网格'], kb: ['🎞️', 'Ken Burns'], code: ['💻', '代码窗口'],
+      chat: ['💬', '对话气泡'],
+    };
+    return M[t] || ['▦', t || '场景'];
+  },
+  _sceneBrief(s) {
+    const bits = [];
+    if (Array.isArray(s.points) && s.points.length) bits.push(`要点 ${s.points.length} 条`);
+    if (Array.isArray(s.keywords) && s.keywords.length) bits.push(`关键词 ${s.keywords.length} 个`);
+    if (Array.isArray(s.bars) && s.bars.length) bits.push(`数据条 ${s.bars.length} 项`);
+    if (Array.isArray(s.cards) && s.cards.length) bits.push(`卡片 ${s.cards.length} 张`);
+    if (Array.isArray(s.messages) && s.messages.length) bits.push(`对话 ${s.messages.length} 条`);
+    if (Array.isArray(s.events) && s.events.length) bits.push(`节点 ${s.events.length} 个`);
+    if (Array.isArray(s.columns) && s.columns.length) bits.push(`对比 ${s.columns.length} 列`);
+    if (s.counterTo) bits.push(`数值 ${s.counterTo}${s.counterSuffix || ''}`);
+    if (s.percent) bits.push(`${s.percent}%`);
+    if (s.code) bits.push(`代码 ${String(s.code).split('\n').length} 行`);
+    return bits.join(' · ');
+  },
+  // 切换素材类型时，按新类型从该场景已有文本（优先口播原文）里就地补全画面字段。
+  // narration 始终保留（配音/字幕要用），只重算可视化字段；抽取结果统一清洗：
+  // 去枚举前缀、去连接词/多余标点、label 智能截断。
+  _reskinScene(s, newType) {
+    const out = Object.assign({}, s);
+    out.type = newType;
+    const src = String(s.narration || s.title || s.quote || (Array.isArray(s.points) ? s.points.join('，') : '') || '').trim();
+    if (!src) return out;
+
+    // —— 清洗工具 ——
+    const stripEnum = (t) => String(t || '').replace(
+      /^(?:\s*(?:首先|其次|再次|然后|接着|再者|最后|于是|并且|而且)\s*[,，、]?|\s*第[一二三四五六七八九十0-9]+[步章节]?[:：、,.\s]|\s*[①②③⑤⑥⑦⑨⑩]\s*|\s*[-*•]\s*|\s*\d+[\.、\)]\s*)+/,
+      '',
+    );
+    const trimPunct = (t) => String(t || '').replace(/^[\s，,。.、；;：:！!？?]+/, '').replace(/[\s，,。.、；;：:！!？?]+$/, '');
+    const cleanPhrase = (t) => trimPunct(stripEnum(t)).replace(/\s{2,}/g, ' ').trim();
+    // label：去掉数字+单位、连接词、结尾单字虚词，再截断
+    const cleanLabel = (t) => {
+      let x = String(t || '');
+      x = x.replace(/-?\d[\d.,]*\s*(%|％|万|亿|千|元|人次|人|次|倍|款|个|天|年|月|日|岁)?/g, '');
+      x = x.replace(/(大约|约为|约|达到|高达|超过|低于|接近|仅仅|只有|仅有|录得|占比|比例|等于)/g, '');
+      x = x.replace(/[的\s]+$/, '');
+      while (/[是为有占至到在]$/.test(x)) x = x.replace(/[是为有占至到在]$/, '');
+      return trimPunct(x).replace(/\s{2,}/g, ' ').trim().slice(0, 12);
+    };
+
+    const sentences = (src.match(/[^。！？!?；;]+[。！？!?]?/g) || []).map(x => x.trim()).filter(Boolean);
+    const items = src.split(/[，,、;；]/).map(x => x.trim()).filter(Boolean);
+    const cleanList = (arr, n) => arr.map(cleanPhrase).filter(Boolean).slice(0, n || 6);
+    const list2 = items.length >= 2 ? items : sentences;
+    const nums = src.match(/-?\d+(?:[.,]\d+)?/g) || [];
+    const first = sentences[0] || src;
+    const cut = (t, n) => String(t || '').slice(0, n);
+
+    switch (newType) {
+      case 'counter': {
+        const pct = /%|百分之/.test(src);
+        const unitM = src.match(/(\d+(?:[.,]\d+)?)\s*(万元|亿元|万人|元|亿|万|千|倍|人次|人|款|个|天|年|月|日|岁|次)/);
+        out.counterTo = nums.length ? Number(nums[0].replace(/,/g, '')) : 0;
+        out.counterSuffix = pct ? '%' : (unitM ? unitM[2] : '');
+        out.counterPrefix = (src.match(/[¥￥$]/) || [''])[0];
+        out.title = '';
+        break;
+      }
+      case 'ring': {
+        const pm = src.match(/(\d+(?:\.\d+)?)\s*%/);
+        out.percent = pm ? Math.min(100, Number(pm[1])) : (nums.length ? Math.min(100, Number(nums[0])) : 0);
+        out.title = cut(cleanPhrase(src.replace(/\d+(?:\.\d+)?\s*%?/, '')), 20);
+        break;
+      }
+      case 'bars': {
+        let bars = sentences.map(x => {
+          const m = x.match(/(.+?)[：:，,]?\s*(-?\d+(?:\.\d+)?)\s*%?/);
+          return m ? { label: cleanLabel(m[1]), value: Number(m[2]) } : null;
+        }).filter(b => b && b.label);
+        if (bars.length < 2 && list2.length >= 2) {
+          bars = list2.map(it => {
+            const m = it.match(/(\d+(?:\.\d+)?)/);
+            return { label: cleanLabel(it), value: m ? Number(m[1]) : 0 };
+          }).filter(b => b.label);
+        }
+        out.bars = bars.length ? bars.slice(0, 6) : [{ label: '项目1', value: 1 }, { label: '项目2', value: 2 }];
+        out.title = cut(cleanPhrase(first), 18);
+        break;
+      }
+      case 'checklist':
+        out.points = cleanList(list2); out.title = cut(cleanPhrase(first), 18); break;
+      case 'points':
+        out.points = cleanList(list2); out.title = cut(cleanPhrase(first), 18); break;
+      case 'cards': {
+        const its = cleanList(list2);
+        out.cards = its.length ? its.map(it => ({ emoji: '⭐', title: cut(it, 10), desc: it })) : [{ emoji: '⭐', title: '卡片', desc: '' }];
+        out.title = cut(cleanPhrase(first), 18); break;
+      }
+      case 'data': {
+        const raw = list2.length >= 2 ? list2 : src.split(/[\s，,、。]+/);
+        out.keywords = cleanList(raw, 8); out.title = cut(cleanPhrase(first), 18); break;
+      }
+      case 'quote': out.quote = trimPunct(src).slice(0, 60); break;
+      case 'typewriter': out.title = cut(cleanPhrase(src), 40); break;
+      case 'banner':
+        out.title = cut(cleanPhrase(src), 40);
+        if (!Array.isArray(out.emphasis) || !out.emphasis.length) out.emphasis = cleanList(items, 2);
+        break;
+      case 'cover': out.title = cut(cleanPhrase(first), 20); break;
+      case 'conclusion': out.title = cut(cleanPhrase(first), 20); break;
+      case 'timeline': {
+        const its = cleanList(list2);
+        out.events = its.map((it, i) => ({ time: String(i + 1), text: it }));
+        out.title = cut(cleanPhrase(first), 18); break;
+      }
+      case 'compare': {
+        const its = cleanList(list2, 8); const half = Math.ceil(its.length / 2) || 1;
+        out.columns = [
+          { name: '方案A', items: its.slice(0, half).map(x => cut(x, 20)) },
+          { name: '方案B', items: its.slice(half).map(x => cut(x, 20)) },
+        ];
+        out.title = cut(cleanPhrase(first), 18); break;
+      }
+      case 'chat': {
+        const its = cleanList(sentences.length >= 2 ? sentences : items);
+        out.messages = its.map((it, i) => ({ side: i % 2 === 0 ? 'other' : 'me', from: i % 2 === 0 ? '粉丝' : '我', text: it }));
+        out.title = cut(cleanPhrase(first), 14); break;
+      }
+      case 'code': out.code = src; break; // 代码不清洗
+      case 'karaoke': {
+        const dur = out.durationFrames || 90;
+        const lines = (sentences.length ? sentences : [src]).map(cleanPhrase).filter(Boolean).slice(0, 8);
+        const per = lines.length ? (dur / 30) / lines.length : 0;
+        out.subtitles = lines.map((ln, i) => ({ start: +(i * per).toFixed(2), end: +((i + 1) * per).toFixed(2), text: ln }));
+        break;
+      }
+      case 'kb': out.caption = cut(cleanPhrase(src), 40); break;
+      case 'cite': out.source = trimPunct(src).slice(0, 80); break;
+      default: break; // title 等无需额外字段
+    }
+    return out;
+  },
+  // 预览 AI 分镜结果：支持拖拽排序 + 就地改素材类型；
+  // 返回 Promise<{action:'confirm'|'regen'|'cancel', scenes: 可能被改过的场景数组}>
+  _previewScenes(scenes) {
+    return new Promise((resolve) => {
+      const old = document.getElementById('kc_prevMask'); if (old) old.remove();
+      // 浅拷贝每个场景对象，排序/改类型只影响本次预览副本，不污染外部引用。
+      let list = scenes.map(s => Object.assign({}, s));
+      const TYPES = ['cover', 'title', 'points', 'quote', 'data', 'chart', 'timeline', 'compare', 'cite', 'conclusion',
+        'typewriter', 'karaoke', 'banner', 'counter', 'ring', 'bars', 'checklist', 'cards', 'kb', 'code', 'chat'];
+      let dragFrom = null;
+
+      const mask = document.createElement('div');
+      mask.id = 'kc_prevMask';
+      mask.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.62);z-index:9999;display:flex;align-items:center;justify-content:center;padding:20px';
+      mask.innerHTML = `<div style="width:min(760px,96vw);max-height:88vh;display:flex;flex-direction:column;background:#0b1020;border:1px solid #243150;border-radius:14px;overflow:hidden">
+        <div style="padding:16px 20px;border-bottom:1px solid #243150">
+          <div style="font-size:16px;font-weight:700;color:#e8edf7">🪄 AI 分镜预览（<span id="kc_prevCount">${list.length}</span> 个场景）</div>
+          <div style="font-size:12px;color:#93a0bd;margin-top:4px">拖动左侧 ⣿ 可排序，右侧下拉可就地改素材类型；确认后写入工程。</div>
+        </div>
+        <div id="kc_prevBody" style="padding:14px 16px;overflow:auto;flex:1"></div>
+        <div style="padding:14px 16px;border-top:1px solid #243150;display:flex;gap:10px;justify-content:flex-end">
+          <button id="kc_prevCancel" class="btn ghost" type="button">取消</button>
+          <button id="kc_prevRegen" class="btn" type="button">↻ 重新生成</button>
+          <button id="kc_prevOk" class="btn" type="button" style="background:#5eead4;color:#08110d;border-color:#5eead4">✅ 确认发送</button>
+        </div></div>`;
+      document.body.appendChild(mask);
+      const body = mask.querySelector('#kc_prevBody');
+
+      const optionsFor = (t) => TYPES.map((tp) => {
+        const m = this._typeMeta(tp);
+        return `<option value="${tp}"${tp === t ? ' selected' : ''}>${m[0]} ${m[1]}</option>`;
+      }).join('');
+
+      const rowHtml = (s, i) => {
+        const brief = this._sceneBrief(s);
+        const narr = String(s.narration || '').replace(/</g, '&lt;');
+        const cur = this._typeMeta(s.type);
+        return `<div class="kc-prow" data-i="${i}" style="display:flex;gap:10px;align-items:flex-start;padding:10px 12px;border:1px solid #243150;border-radius:8px;margin-bottom:8px;background:#121a30">
+          <span class="kc-pdrag" draggable="true" data-i="${i}" title="拖动排序" style="flex:0 0 20px;text-align:center;color:#93a0bd;cursor:grab;user-select:none;font-size:15px;padding-top:2px">⣿</span>
+          <div style="flex:1;min-width:0">
+            <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;flex-wrap:wrap">
+              <span style="font-size:12px;color:#5eead4;font-weight:700;min-width:18px">${i + 1}</span>
+              <select data-i="${i}" class="kc-ptypesel" style="background:#0b1020;color:#e8edf7;border:1px solid #243150;border-radius:6px;padding:3px 8px;font-size:12px">${optionsFor(s.type)}</select>
+              <span style="font-size:11px;color:#93a0bd">${cur[0]}${brief ? ' · ' + brief : ''}</span>
+            </div>
+            <div style="font-size:13px;color:#e8edf7;line-height:1.5">${narr || '（无口播文本）'}</div>
+          </div></div>`;
+      };
+
+      const render = () => {
+        body.innerHTML = list.map((s, i) => rowHtml(s, i)).join('');
+        body.querySelectorAll('.kc-pdrag').forEach((h) => {
+          h.addEventListener('dragstart', (e) => {
+            dragFrom = +h.dataset.i;
+            try { e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', String(dragFrom)); } catch (_) {}
+          });
+          h.addEventListener('dragend', () => { dragFrom = null; });
+        });
+        body.querySelectorAll('.kc-prow').forEach((row) => {
+          row.addEventListener('dragover', (e) => { if (dragFrom === null) return; e.preventDefault(); row.style.outline = '2px solid #5eead4'; });
+          row.addEventListener('dragleave', () => { row.style.outline = ''; });
+          row.addEventListener('drop', (e) => {
+            e.preventDefault(); row.style.outline = '';
+            const to = +row.dataset.i;
+            if (dragFrom === null || dragFrom === to) return;
+            const [m] = list.splice(dragFrom, 1);
+            list.splice(to, 0, m);
+            dragFrom = null;
+            render();
+          });
+        });
+        body.querySelectorAll('.kc-ptypesel').forEach((sel) => {
+          sel.addEventListener('change', () => {
+            const i = +sel.dataset.i;
+            list[i] = this._reskinScene(list[i], sel.value);
+            render();
+          });
+        });
+      };
+      render();
+
+      const finish = (action) => { mask.remove(); resolve({ action, scenes: list }); };
+      mask.querySelector('#kc_prevOk').onclick = () => finish('confirm');
+      mask.querySelector('#kc_prevRegen').onclick = () => finish('regen');
+      mask.querySelector('#kc_prevCancel').onclick = () => finish('cancel');
+      mask.addEventListener('click', (e) => { if (e.target === mask) finish('cancel'); });
+    });
+  },
+  async send() {
     const segs = this._segs.map(s => s.trim()).filter(Boolean);
     if (!segs.length) { toast('请先分割或添加分段', true); return; }
     this._segs = segs;
-    try { localStorage.setItem(TALK_PROJECT_KEY, JSON.stringify(this.buildProject())); }
+    const btn = document.getElementById('kc_sendBtn');
+    const hint = document.getElementById('kc_sendHint');
+    const useAI = document.getElementById('kc_useAI') && document.getElementById('kc_useAI').checked;
+    const setBusy = (b, label) => { if (btn) { btn.disabled = b; btn.textContent = label; } };
+
+    // 规则式：离线即时，直接生成发送（不预览）
+    if (!useAI) {
+      try { localStorage.setItem(TALK_PROJECT_KEY, JSON.stringify(this.buildProject(null))); }
+      catch (e) { toast('本地工程写入失败', true); return; }
+      this.saveDraft();
+      toast(`已生成 ${segs.length} 个场景（规则式），正在打开口播视频…`);
+      navigate('koubo');
+      return;
+    }
+
+    // AI 分镜 + 预览确认（支持重新生成 / 失败降级规则式）
+    const subject = this._composeSubject();
+    let scenes = null;
+    for (;;) {
+      setBusy(true, '🪄 AI 分镜中…');
+      if (hint) hint.textContent = '正在让大模型按文案语义分镜并配素材…';
+      let aiOk = true;
+      try { scenes = await this._aiStoryboard(segs.join('\n'), subject); }
+      catch (e) { aiOk = false; }
+      setBusy(false, '➤ 发送到口播视频');
+      if (!aiOk) {
+        if (hint) hint.textContent = 'AI 分镜不可用，已改用规则式分镜。';
+        toast('AI 分镜失败，已降级为规则式', true);
+        scenes = null;
+        break;
+      }
+      if (hint) hint.textContent = `AI 已生成 ${scenes.length} 个场景，请在预览里确认。`;
+      const res = await this._previewScenes(scenes);
+      if (res.action === 'confirm') { scenes = res.scenes; break; }
+      if (res.action === 'cancel') { if (hint) hint.textContent = '已取消，未发送。'; return; }
+      // regen → 用重新生成的结果覆盖，继续循环再调一次 AI
+      scenes = res.scenes;
+    }
+
+    try { localStorage.setItem(TALK_PROJECT_KEY, JSON.stringify(this.buildProject(scenes))); }
     catch (e) { toast('本地工程写入失败', true); return; }
     this.saveDraft();
-    toast(`已生成 ${segs.length} 个场景，正在打开口播视频…`);
+    const n = (scenes && scenes.length) || segs.length;
+    toast(`已生成 ${n} 个场景${scenes ? '（AI）' : '（规则式）'}，正在打开口播视频…`);
     navigate('koubo');
   },
   download() {

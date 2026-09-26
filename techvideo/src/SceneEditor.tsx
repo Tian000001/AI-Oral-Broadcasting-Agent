@@ -1,4 +1,5 @@
 import { useMemo, useRef, useState } from "react";
+import { assetsByGroup, assetByType, ASSET_DEFAULTS } from "./sceneAssets";
 
 interface SceneEditorProps {
   scene: any;
@@ -23,19 +24,7 @@ const PIP_POS_OPTIONS: { value: string; label: string }[] = [
   { value: "br", label: "右下" },
 ];
 
-const SCENE_TYPES: { value: string; label: string }[] = [
-  { value: "cover", label: "封面" },
-  { value: "title", label: "标题" },
-  { value: "points", label: "要点列表" },
-  { value: "quote", label: "金句" },
-  { value: "image", label: "图片卡" },
-  { value: "data", label: "关键词高亮" },
-  { value: "chart", label: "图表" },
-  { value: "timeline", label: "时间线" },
-  { value: "compare", label: "对比" },
-  { value: "cite", label: "引用" },
-  { value: "conclusion", label: "结尾" },
-];
+const SCENE_GROUPS = assetsByGroup();
 
 function str(v: any): string {
   return v == null ? "" : String(v);
@@ -63,6 +52,18 @@ export default function SceneEditor({
   const type = scene?.type || "title";
 
   const set = (patch: any) => onChange(patch);
+
+  // 切换素材类型：把该素材的示例默认字段补进「当前空缺」的字段，方便一键套用效果；
+  // 已有内容不覆盖（避免清掉用户已写的标题/要点）。
+  function applyType(next: string) {
+    const patch: any = { type: next };
+    const d: any = ASSET_DEFAULTS[next] || {};
+    for (const k of Object.keys(d)) {
+      if (k === "type") continue;
+      if (scene?.[k] === undefined) patch[k] = d[k];
+    }
+    set(patch);
+  }
 
   // v1.9.4：本场景视频上传状态（独立于全局口播素材的上传流程）
   const sceneVideoRef = useRef<HTMLInputElement>(null);
@@ -104,14 +105,23 @@ export default function SceneEditor({
     <div className="ts-scene-editor">
       <label className="ts-field">
         <span>类型</span>
-        <select value={type} onChange={(e) => set({ type: e.target.value })}>
-          {SCENE_TYPES.map((t) => (
-            <option key={t.value} value={t.value}>
-              {t.label}
-            </option>
+        <select value={type} onChange={(e) => applyType(e.target.value)}>
+          {SCENE_GROUPS.map((g) => (
+            <optgroup key={g.group} label={g.group}>
+              {g.items.map((a) => (
+                <option key={a.type} value={a.type}>
+                  {a.emoji} {a.label}
+                </option>
+              ))}
+            </optgroup>
           ))}
         </select>
       </label>
+      {assetByType(type) && (
+        <p className="ts-hint" style={{ marginTop: -6 }}>
+          {assetByType(type)!.emoji} {assetByType(type)!.hint}
+        </p>
+      )}
 
       {/* 通用字段 */}
       <label className="ts-field">
@@ -395,6 +405,265 @@ export default function SceneEditor({
         </div>
       )}
 
+      {/* —— 素材库新增构件的专属参数编辑区 —— */}
+      {(type === "typewriter") && (
+        <label className="ts-field">
+          <span>打字速度（字/秒）</span>
+          <input
+            type="number"
+            min={2}
+            max={60}
+            value={num(scene?.revealSpeed, 12)}
+            onChange={(e) => set({ revealSpeed: num(e.target.value, 12) })}
+          />
+        </label>
+      )}
+
+      {type === "karaoke" && (
+        <label className="ts-field">
+          <span>字幕（每行一句，自动按场景时长均分逐词高亮）</span>
+          <textarea
+            rows={4}
+            value={(scene?.subtitles || []).map((s: any) => String(s?.text ?? "")).join("\n")}
+            onChange={(e) => {
+              const lines = e.target.value.split("\n").map((s) => s.trim()).filter(Boolean);
+              const total = (scene?.durationFrames || 90) / 30;
+              const per = lines.length ? total / lines.length : 0;
+              set({
+                subtitles: lines.map((text, i) => ({
+                  start: +(i * per).toFixed(2),
+                  end: +((i + 1) * per).toFixed(2),
+                  text,
+                })),
+              });
+            }}
+            placeholder="把每句话拆成词&#10;逐词高亮跟读"
+          />
+        </label>
+      )}
+
+      {type === "counter" && (
+        <div className="ts-subpanel">
+          <div className="ts-row">
+            <label className="ts-field" style={{ flex: 1 }}>
+              <span>起始值</span>
+              <input type="number" value={num(scene?.counterFrom, 0)} onChange={(e) => set({ counterFrom: num(e.target.value, 0) })} />
+            </label>
+            <label className="ts-field" style={{ flex: 1 }}>
+              <span>目标值</span>
+              <input type="number" value={num(scene?.counterTo, 0)} onChange={(e) => set({ counterTo: num(e.target.value, 0) })} />
+            </label>
+          </div>
+          <div className="ts-row">
+            <label className="ts-field" style={{ flex: 1 }}>
+              <span>前缀</span>
+              <input value={str(scene?.counterPrefix)} onChange={(e) => set({ counterPrefix: e.target.value })} placeholder="如 ¥" />
+            </label>
+            <label className="ts-field" style={{ flex: 1 }}>
+              <span>后缀</span>
+              <input value={str(scene?.counterSuffix)} onChange={(e) => set({ counterSuffix: e.target.value })} placeholder="如 % / 条" />
+            </label>
+            <label className="ts-field" style={{ width: 90 }}>
+              <span>小数位</span>
+              <input type="number" min={0} max={4} value={num(scene?.counterDecimals, 0)} onChange={(e) => set({ counterDecimals: num(e.target.value, 0) })} />
+            </label>
+          </div>
+        </div>
+      )}
+
+      {type === "ring" && (
+        <label className="ts-field">
+          <span>百分比（0-100）</span>
+          <input
+            className="ts-range"
+            type="range"
+            min={0}
+            max={100}
+            step={1}
+            value={num(scene?.percent, 0)}
+            onChange={(e) => set({ percent: num(e.target.value, 0) })}
+          />
+          <span className="ts-hint">{num(scene?.percent, 0)}%</span>
+        </label>
+      )}
+
+      {type === "bars" && (
+        <div className="ts-subpanel">
+          <div className="ts-subpanel-head"><span>数据条</span></div>
+          <div className="ts-list">
+            {(scene?.bars || []).map((b: any, i: number) => (
+              <div key={i} className="ts-list-row">
+                <input
+                  value={str(b?.label)}
+                  placeholder="标签"
+                  onChange={(e) => {
+                    const next = [...(scene.bars || [])];
+                    next[i] = { ...next[i], label: e.target.value };
+                    set({ bars: next });
+                  }}
+                />
+                <input
+                  type="number"
+                  style={{ width: 90 }}
+                  value={num(b?.value, 0)}
+                  placeholder="值"
+                  onChange={(e) => {
+                    const next = [...(scene.bars || [])];
+                    next[i] = { ...next[i], value: num(e.target.value, 0) };
+                    set({ bars: next });
+                  }}
+                />
+                <button
+                  className="ts-icon-btn"
+                  onClick={() => {
+                    const next = [...(scene.bars || [])];
+                    next.splice(i, 1);
+                    set({ bars: next });
+                  }}
+                >
+                  ×
+                </button>
+              </div>
+            ))}
+            <button className="ts-btn" onClick={() => set({ bars: [...(scene.bars || []), { label: "", value: 0 }] })}>
+              ＋ 添加一项
+            </button>
+          </div>
+        </div>
+      )}
+
+      {type === "cards" && (
+        <div className="ts-subpanel">
+          <div className="ts-subpanel-head"><span>卡片（图标 / 标题 / 描述）</span></div>
+          <div className="ts-list">
+            {(scene?.cards || []).map((cd: any, i: number) => (
+              <div key={i} className="ts-list-col">
+                <div className="ts-list-row">
+                  <input
+                    style={{ width: 64 }}
+                    value={str(cd?.emoji)}
+                    placeholder="图标"
+                    onChange={(e) => {
+                      const next = [...(scene.cards || [])];
+                      next[i] = { ...next[i], emoji: e.target.value };
+                      set({ cards: next });
+                    }}
+                  />
+                  <input
+                    value={str(cd?.title)}
+                    placeholder="卡片标题"
+                    onChange={(e) => {
+                      const next = [...(scene.cards || [])];
+                      next[i] = { ...next[i], title: e.target.value };
+                      set({ cards: next });
+                    }}
+                  />
+                  <button
+                    className="ts-icon-btn"
+                    onClick={() => {
+                      const next = [...(scene.cards || [])];
+                      next.splice(i, 1);
+                      set({ cards: next });
+                    }}
+                  >
+                    ×
+                  </button>
+                </div>
+                <textarea
+                  rows={2}
+                  value={str(cd?.desc)}
+                  placeholder="卡片说明"
+                  onChange={(e) => {
+                    const next = [...(scene.cards || [])];
+                    next[i] = { ...next[i], desc: e.target.value };
+                    set({ cards: next });
+                  }}
+                />
+              </div>
+            ))}
+            <button className="ts-btn" onClick={() => set({ cards: [...(scene.cards || []), { emoji: "⭐", title: "标题", desc: "说明" }] })}>
+              ＋ 添加卡片
+            </button>
+          </div>
+        </div>
+      )}
+
+      {type === "code" && (
+        <div className="ts-subpanel">
+          <label className="ts-field">
+            <span>语言标注（仅显示）</span>
+            <input value={str(scene?.codeLang)} onChange={(e) => set({ codeLang: e.target.value })} placeholder="如 ts / python" />
+          </label>
+          <label className="ts-field">
+            <span>代码正文（每行一条，逐行显现）</span>
+            <textarea
+              rows={8}
+              value={str(scene?.code)}
+              onChange={(e) => set({ code: e.target.value })}
+              style={{ fontFamily: "ui-monospace, Consolas, monospace" }}
+            />
+          </label>
+        </div>
+      )}
+
+      {type === "chat" && (
+        <div className="ts-subpanel">
+          <div className="ts-subpanel-head"><span>对话（左右气泡）</span></div>
+          <div className="ts-list">
+            {(scene?.messages || []).map((m: any, i: number) => (
+              <div key={i} className="ts-list-col">
+                <div className="ts-list-row">
+                  <select
+                    value={m?.side === "me" ? "me" : "other"}
+                    style={{ width: 96 }}
+                    onChange={(e) => {
+                      const next = [...(scene.messages || [])];
+                      next[i] = { ...next[i], side: e.target.value };
+                      set({ messages: next });
+                    }}
+                  >
+                    <option value="other">对方</option>
+                    <option value="me">我</option>
+                  </select>
+                  <input
+                    value={str(m?.from)}
+                    placeholder="昵称（可空）"
+                    onChange={(e) => {
+                      const next = [...(scene.messages || [])];
+                      next[i] = { ...next[i], from: e.target.value };
+                      set({ messages: next });
+                    }}
+                  />
+                  <button
+                    className="ts-icon-btn"
+                    onClick={() => {
+                      const next = [...(scene.messages || [])];
+                      next.splice(i, 1);
+                      set({ messages: next });
+                    }}
+                  >
+                    ×
+                  </button>
+                </div>
+                <textarea
+                  rows={2}
+                  value={str(m?.text)}
+                  placeholder="消息内容"
+                  onChange={(e) => {
+                    const next = [...(scene.messages || [])];
+                    next[i] = { ...next[i], text: e.target.value };
+                    set({ messages: next });
+                  }}
+                />
+              </div>
+            ))}
+            <button className="ts-btn" onClick={() => set({ messages: [...(scene.messages || []), { side: "other", from: "", text: "" }] })}>
+              ＋ 添加消息
+            </button>
+          </div>
+        </div>
+      )}
+
       <label className="ts-field">
         <span>旁白（本场景口播）</span>
         <textarea
@@ -419,6 +688,8 @@ export default function SceneEditor({
               <option value="zoom">缩放</option>
               <option value="blur">模糊</option>
               <option value="wipe">擦除</option>
+              <option value="flip">翻转 3D</option>
+              <option value="iris">圆形展开</option>
               <option value="none">无</option>
             </select>
           </label>

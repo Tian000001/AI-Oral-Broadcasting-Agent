@@ -814,6 +814,42 @@ select option, select optgroup,
 }
 .ts-tl-head { margin-bottom: 8px; flex-shrink: 0; }
 
+/* ===== P4 · RVE 式可视化时间轴 ===== */
+.ts-tl { display: flex; flex-direction: column; gap: 8px; }
+.ts-tl-tools { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+.ts-tl-stat { color: var(--text); font-size: 12px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+.ts-tl-snap { display: inline-flex; gap: 6px; align-items: center; font-size: 12px; color: var(--muted); cursor: pointer; user-select: none; }
+.ts-tl-snap input { accent-color: var(--accent); }
+.ts-tl-zoom { display: flex; align-items: center; gap: 8px; margin-left: auto; font-size: 12px; color: var(--muted); }
+.ts-tl-zoom input[type="range"] { width: 140px; accent-color: var(--accent); }
+.ts-tl-btn { background: var(--panel-2); border: 1px solid var(--line); color: var(--text); border-radius: 6px; padding: 4px 10px; font-size: 12px; cursor: pointer; }
+.ts-tl-btn:hover { border-color: var(--accent); }
+
+.ts-tl-scroll { position: relative; overflow-x: auto; overflow-y: hidden; background: #0d0d10; border: 1px solid var(--line); border-radius: 8px; }
+.ts-tl-canvas { position: relative; height: 150px; }
+.ts-tl-ruler { position: absolute; left: 0; right: 0; top: 0; height: 26px; border-bottom: 1px solid var(--line); cursor: ew-resize; }
+.ts-tl-tick { position: absolute; top: 0; height: 100%; border-left: 1px solid rgba(255, 255, 255, .08); pointer-events: none; }
+.ts-tl-tick span { position: absolute; left: 4px; top: 5px; font-size: 10px; color: var(--muted); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+
+.ts-tl-lane { position: absolute; left: 0; right: 0; top: 30px; bottom: 0; }
+.ts-tl-clip {
+  position: absolute; top: 6px; height: calc(100% - 12px);
+  background: linear-gradient(180deg, rgba(94, 234, 212, .10), rgba(138, 162, 255, .05));
+  border: 1px solid var(--line); border-left: 3px solid var(--accent);
+  border-radius: 4px; padding: 6px 10px 6px 8px; cursor: grab; overflow: hidden;
+  transition: background .15s, border-color .15s, box-shadow .1s;
+}
+.ts-tl-clip:hover { border-color: rgba(94, 234, 212, .5); }
+.ts-tl-clip.active { background: rgba(94, 234, 212, .18); border-color: var(--accent); box-shadow: 0 0 0 1px rgba(94, 234, 212, .35); }
+.ts-tl-clip:active { cursor: grabbing; }
+.ts-tl-clip-head { display: flex; align-items: center; gap: 6px; font-size: 10px; color: var(--accent); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+.ts-tl-clip-ico { margin-left: auto; font-size: 13px; }
+.ts-tl-clip-d { color: var(--muted); }
+.ts-tl-clip-t { margin-top: 6px; font-size: 12px; color: var(--text); line-height: 1.3; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ts-tl-resize { position: absolute; right: 0; top: 0; bottom: 0; width: 8px; cursor: ew-resize; background: linear-gradient(90deg, transparent, rgba(94, 234, 212, .28)); }
+.ts-tl-resize:hover { background: rgba(94, 234, 212, .6); }
+.ts-tl-playhead { position: absolute; top: 0; bottom: 0; left: 0; width: 2px; background: var(--accent); box-shadow: 0 0 8px rgba(94, 234, 212, .7); z-index: 5; pointer-events: none; }
+
 /* 场景编辑器子面板 */
 .ts-scene-editor { display: flex; flex-direction: column; gap: 10px; }
 .ts-subpanel { background: rgba(255,255,255,.03); border: 1px solid var(--line-soft); border-radius: 8px; padding: 10px; display: flex; flex-direction: column; gap: 10px; }
